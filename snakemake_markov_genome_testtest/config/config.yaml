@@ -1,0 +1,45 @@
+#config
+
+
+
+#aka RUN_NAME
+name: "covid"
+
+
+#runs through different kmers for testing
+kmer_start: 3
+kmer_end: 27
+
+kmc_t: 4
+bwa_t: 16
+
+#bwa-mem2 index has the same prefix
+#bp = basepairs
+#mb = filessize in mb rounded up
+ref_genom: "/bigdata/ag_abi/manuel/genome/covid/wuhCor1.fa"
+bp: 29903
+mb: 1
+
+
+#covid/wuhCor1.fa"
+#bp: 29903
+#mb: 1
+#ecoli/GCF_003970875.1.fa"
+#bp: 4696000
+#mb: 5
+#fruit_fly/dm6.fa"
+#bp: 143726002
+#mb: 140
+#mouse/mm39.fa"
+#bp: 2728222451
+#mb: 2600
+#human/hg38.fa"
+#bp: 3299210039
+#mb: 3200
+
+#get_genome: False
+#covid: https://hgdownload.gi.ucsc.edu/goldenPath/wuhCor1/bigZips/wuhCor1.fa.gz
+#ecoli: https://hgdownload.soe.ucsc.edu/hubs/GCF/003/970/875/GCF_003970875.1/GCF_003970875.1.fa.gz
+#fruit_fly: https://hgdownload.gi.ucsc.edu/goldenPath/dm6/bigZips/dm6.fa.gz
+#mouse: https://hgdownload.gi.ucsc.edu/goldenPath/mm39/bigZips/mm39.fa.gz
+#human: https://hgdownload.gi.ucsc.edu/goldenPath/hg38/bigZips/hg38.fa.gz

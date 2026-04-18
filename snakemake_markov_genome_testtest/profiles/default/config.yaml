@@ -1,0 +1,6 @@
+cores: 40
+retries: 3
+keep_going: True
+
+resources:
+  mem_mb: 400000

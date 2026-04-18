@@ -1,0 +1,17 @@
+name: simtest_pipeline
+channels:
+  - bioconda
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - snakemake=7.32.4
+  - bwa-mem2
+  - kmc
+  - simlord
+  - markov_genome
+  - pandas
+  - matplotlib
+  - seaborn
+  - samtools
+  - pip

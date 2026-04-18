@@ -1,0 +1,62 @@
+# Main entrypoint of the workflow.
+# Please follow the best practices:
+# https://snakemake.readthedocs.io/en/stable/snakefiles/best_practices.html,
+# in particular regarding the standardized folder structure mentioned there.
+
+
+# load configuration
+# -----------------------------------------------------
+configfile: "config/config.yaml"
+
+
+KMER_RANGE = range(config["kmer_start"], config["kmer_end"] + 1)
+RUN_NAME = config["name"]
+
+
+# load rules
+# -----------------------------------------------------
+include: "rules/utility.smk"
+include: "rules/simulate_genom.smk"
+include: "rules/read_mapping.smk"
+include: "rules/kmer_count.smk"
+
+
+# optional messages, log and error handling
+# -----------------------------------------------------
+onstart:
+    print("\n--- Analysis started ---\n")
+
+
+onsuccess:
+    print("\n--- Workflow finished! ---\n")
+
+
+onerror:
+    print("\n--- An error occurred! ---\n")
+    # for job in failed_jobs:
+    #     try:
+    #         print(f"rule {job.rule.name} failed!")
+    #         inputs = job.input
+    #         outputs = job.output
+    #         match job.rule.name:
+    #             case generate_markov_genome:
+    #                 shell("bash /scripts/fix_broken_files.sh {job.output}")
+    #             case 
+    #         if job.rule.name is in ["simlord_random", "simlord_reads_baseline", "simlord_reads"]
+    #         inputs = job.input
+    #         outputs = job.output
+
+    #     # Trigger your custom action (e.g., a bash script)
+    #     shell(f"bash cleanup_script.sh --in {inputs} --out {outputs}")
+
+
+# target rules
+# -----------------------------------------------------
+rule all:
+    default_target: True
+    input:
+        expand([
+            f"results/plots/{RUN_NAME}_{{kmer}}kmer_plot.png",
+            f"results/plots/{RUN_NAME}_{{kmer}}_benchmark_plot_bwa.png",
+            f"results/plots/{RUN_NAME}_{{kmer}}_benchmark_plot_kmc.png",],
+            kmer=KMER_RANGE),
