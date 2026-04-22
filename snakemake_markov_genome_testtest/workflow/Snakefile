@@ -19,7 +19,7 @@ include: "rules/utility.smk"
 include: "rules/simulate_genom.smk"
 include: "rules/read_mapping.smk"
 include: "rules/kmer_count.smk"
-
+include: "rules/generate_reads.smk"
 
 # optional messages, log and error handling
 # -----------------------------------------------------
@@ -31,21 +31,25 @@ onsuccess:
     print("\n--- Workflow finished! ---\n")
 
 
-onerror:
-    print("\n--- An error occurred! ---\n")
-    # for job in failed_jobs:
-    #     try:
-    #         print(f"rule {job.rule.name} failed!")
-    #         inputs = job.input
-    #         outputs = job.output
-    #         match job.rule.name:
-    #             case generate_markov_genome:
-    #                 shell("bash /scripts/fix_broken_files.sh {job.output}")
-    #             case 
-    #         if job.rule.name is in ["simlord_random", "simlord_reads_baseline", "simlord_reads"]
-    #         inputs = job.input
-    #         outputs = job.output
+def check_error_file():
+    import os
+    import datetime
+    error_file = "error_current_run.txt"
+    now = datetime.datetime.now()
+    if not os.path.isfile(error_file):
+        with open(error_file, "w") as f:
+            f.write("\n--- An error occurred! ---\n")
+    return error_file, time_stamp
 
+
+onerror:
+    error_file, now = check_error_file()
+    try:
+        with open(error_file, "a") as f:
+            f.write(f"\n\n\n{time_stamp}\n")
+            f.write(str(failed_jobs))
+    finally:
+        print("error recorded")
     #     # Trigger your custom action (e.g., a bash script)
     #     shell(f"bash cleanup_script.sh --in {inputs} --out {outputs}")
 
@@ -56,7 +60,9 @@ rule all:
     default_target: True
     input:
         expand([
-            f"results/plots/{RUN_NAME}_{{kmer}}kmer_plot.png",
-            f"results/plots/{RUN_NAME}_{{kmer}}_benchmark_plot_bwa.png",
-            f"results/plots/{RUN_NAME}_{{kmer}}_benchmark_plot_kmc.png",],
+            f"results/plots/benchmark_markov_{RUN_NAME}_{{kmer}}kmer_plot.tsv",
+            f"results/plots/kmer_{RUN_NAME}_{{kmer}}.tsv",
+            f"results/plots/kmer_{RUN_NAME}_{{kmer}}_intersect0.tsv",
+            f"results/plots/kmer_{RUN_NAME}_{{kmer}}_intersect1.tsv",
+            ],
             kmer=KMER_RANGE),

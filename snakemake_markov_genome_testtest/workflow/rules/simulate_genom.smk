@@ -4,19 +4,16 @@ rule generate_markov_genome:
     input:
         fasta_file=config["ref_genom"],
     params:
-        k="{kmer}",
+        k={kmer},
         s=config["bp"],
     output:
-        f"results/{RUN_NAME}/{{kmer}}/markov_sim.fa",
-    log:
-        out=f"results/{RUN_NAME}/{{kmer}}/markov_sim.log",
-        err=f"results/{RUN_NAME}/{{kmer}}/markov_sim.err",
-    priority: 
-        50
+        temp(f"results/{RUN_NAME}/{{kmer}}/markov_sim.fa"),
     benchmark:
         f"results/{RUN_NAME}/{{kmer}}/markov_sim.tsv",
     message:
         """--- Generating genome sequence from {wildcards.kmer}-kmer""",
+    resources: config["mb"] * 4
+    priority: 50
     shell:
         """
         markov_genome \
@@ -24,6 +21,5 @@ rule generate_markov_genome:
         --output {output} \
         --order {params.k} \
         --lens {params.s} 2>> {log.err} 1>> {log.out} ;
-        /scripts/fix_broken_files.sh {output} 
         """
 
