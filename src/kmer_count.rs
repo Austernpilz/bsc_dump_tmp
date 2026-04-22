@@ -1,295 +1,347 @@
-use std::env::args;
-use std::fs::{metadata, File};
-use std::io::SeekFrom;
-use std::io::{Read, Seek};
-use std::thread;
+use std::collections::HashMap;
 
 #[derive(Debug, Default)]
-enum kmer_trie_leaf {
-    counts: [usize],
-    previous_kmer_len: u8,
-    is_leaf: bool,
+struct KmerTrieLeaf {
+    counts: [usize; 4],
 }
 
-impl kmer_trie_leaf {
-    fn new(len_b: u8, len_previous_kmer: u8) -> Self {
-        Self {
-            counts: [0usize; (1<<len_b) as usize],
-            len_previous_kmer,
-            is_leaf : true,
-        }
-    }
+#[derive(Default)]
+enum KmerTrieNode {
+    Trie(Box<KmerTrie>),
+    Leaf(KmerTrieLeaf),
+    #[default]
+    Empty
 }
 
-#[derive(Debug, Default)]
-enum kmer_trie_node {
-    Node(Box<kmer_trie>),
-    Leaf(Box<kmer_trie_leaf>),
-}
-
-#[derive(Debug, Default)]
-struct kmer_trie {
+#[derive(Default)]
+struct KmerTrie {
     order: u8,
     depth: u8,
-    len_b: u8, //size_alphabet in bit (2 in our case)
-    sub_k: u8, //how many hashed chars can fit in one u8
-    is_leaf: bool,
-    children: HashMap<u8, kmer_trie_node>,
+    children: HashMap<u8, KmerTrieNode>,
 }
 
-impl kmer_trie {
-    fn new(order: u8, depth: u8, size_alphabet: u8) -> Self {
-        Self {
-            order,
-            depth,
-            len_b: give_pos(size_alphabet),
-            sub_k: give_k(size_alphabet), //(bit_size:kmer) 1:8 2:4 3:2 4:2 5:1 6:1 7:1 8:1 9geht nicht :D
-            leaf: False,
-            children: HashMap::new(),
+impl KmerTrieLeaf {
+    fn new() -> Self {
+        Self {counts: [1,1,1,1]}
+    }
+
+    fn add_node(&mut self, node: &KmerTrieNode) {
+        match node {
+            KmerTrieNode::Leaf(leaf) => self.add_leaf(leaf.counts),
+            KmerTrieNode::Trie(trie) => self.add_trie(trie),
+            KmerTrieNode::Empty => return,
         }
     }
 
-    fn new_node(&self) -> kmer_trie_node {
-        kmer_trie_node::Node(Box::new(kmer_trie::new(
-            self.order,
-            self.depth + self.sub_k,
-            self.len_b,
-        )))
+    fn add_trie(&mut self, trie: &KmerTrie) {
+        self.add_leaf(trie.give_first_base_transition());
     }
 
-    fn new_leaf(&self, len_last_kmer: u8) -> Vec<usize> {
-        kmer_trie_node::Leaf(Box::new(kmer_trie_leaf(
-            self.len_b,
-            len_last_kmer,
-        )))
+    fn add_leaf(&mut self, count: [usize; 4]) {
+        self.counts[0] += count[0] - 1;
+        self.counts[1] += count[1] - 1;
+        self.counts[2] += count[2] - 1;
+        self.counts[3] += count[3] - 1;
+        // for (base, c) in self.counts.iter_mut().zip(count) {
+        //     *base += c - 1;
+        // } // if leaf extend to other alphabets
     }
 
-    //the hashing assumes trailing zeroes
-    fn insert_kmer(&mut self, kmer: &[u8])
+    fn get_sum(&self) -> usize {
+        self.counts[0] + self.counts[1] + self.counts[2] + self.counts[3] - 4 
+        //self.counts.iter().sum::<usize>() - 4
+    }
+}
+
+impl KmerTrieNode {
+    fn get_sum(&self) -> usize {
+        return match self {
+            KmerTrieNode::Leaf(leaf) => leaf.get_sum(),
+            KmerTrieNode::Trie(trie) => trie.get_sum(),
+            KmerTrieNode::Empty => 0,
+        }
+    }
+
+    fn give_first_base_transition(&self) -> [usize; 4] {
+        return match self {
+            KmerTrieNode::Leaf(leaf) => leaf.counts,
+            KmerTrieNode::Trie(trie) => trie.give_first_base_transition(),
+            KmerTrieNode::Empty => [1,1,1,1],
+        }
+    }
+
+    fn give_transitions(&self, kmer: &[u8]) -> [usize; 4] {
+        return match self {
+            KmerTrieNode::Leaf(leaf) => leaf.counts,
+            KmerTrieNode::Trie(trie) => trie.give_transitions(&kmer),
+            KmerTrieNode::Empty => [1,1,1,1],
+        }
+    }
+
+    fn merge(&mut self, trie: &KmerTrie) {
+        match self {
+            KmerTrieNode::Leaf(leaf) => leaf.add_trie(trie),
+            KmerTrieNode::Trie(my_trie) => my_trie.merge(trie),
+            KmerTrieNode::Empty => return, 
+            //would be really bad if it lands here, should insert before :D
+        }
+    }
+
+
+    fn is_leaf(&self) -> bool {
+        match self {
+            KmerTrieNode::Leaf(_) => true,
+            _ => false,
+        }
+    }
+
+    fn is_trie(&self) -> bool {
+        match self {
+            KmerTrieNode::Trie(_) => true,
+            _ => false,
+        }
+    }
+}
+
+fn new_trie(order: u8, depth: u8) -> KmerTrieNode {
+        KmerTrieNode::Trie(Box::new(KmerTrie::new(order, depth + 4,)))
+    }
+
+fn new_leaf() -> KmerTrieNode {
+    KmerTrieNode::Leaf(KmerTrieLeaf::new())
+}
+
+impl KmerTrie {
+    fn new(order: u8, depth: u8) -> Self {
+        Self {order, depth, children: HashMap::new()}
+    }
+
+    fn insert_kmer_counting(&mut self, kmer: &[u8])
     {
-        if self.depth > self.order || kmer.is_empty() { return; }
-        // base == alphabet size in bits, 
-        let to_fill = self.order - self.depth - 1; //adding the 1 here makes the rest easier
-        if to_fill > self.sub_k{ //more than one base is still in kmer[1]
-            let node = self.children
-                .entry(kmer[0])
-                .or_insert(self.new_node());
-            *node.insert_kmer(&kmer[1..]);
-        } else {
-            let border = 8 - self.to_fill * self.len_b
-            let (front, back) = split_at(kmer[1], border)
-            back >>= (border - self.len_b)
-            let node = self.children
-                .entry(front)
-                .or_insert(self.new_leaf(self.len_b));
-            *node.counts[back as usize] += 1
+        //counting_step shoulnd't reach kmer.len() == 1, because i use k.next_multiple_of(4)+1 so only order 0 gives me 1
+        if kmer.len() < 2 { return; } //for safeguarding
+        if kmer.len() == 2 {
+            if let KmerTrieNode::Leaf(leaf) = self.children.entry(kmer[0]).or_insert_with(|| new_leaf()) {
+                leaf.counts[get3(kmer[0]) as usize] += 1;
+            }
+        } else if let KmerTrieNode::Trie(trie) = self.children.entry(kmer[0]).or_insert_with( || new_trie(self.order, self.depth)) {
+            trie.insert_kmer_counting(&kmer[1..]);
+        }
+    }
+
+    fn count_kmer(&mut self, kmer: &[u8], block_length: usize){
+        //chunks didn't work, i don't know
+        for i in (block_length-1..kmer.len()).step_by(block_length) {
+            self.insert_kmer_counting(&kmer[i-block_length..i]);
+        }
     }
 
     //count all appearences in this branch
-    fn get_sum(&self, count: &usize) {
-        for (_, node) in self.children.iter() {
-            match node {
-                kmer_trie_node::Node(trie) => trie.get_sum(count),
-                kmer_trie_node::Leaf(leaf) => count + leaf.iter().sum(),
+    fn get_sum(&self) -> usize {
+        // let mut count: usize = 0;
+        // for (_, node_mer) in self.children.iter() {
+        //     count += node_mer.get_sum();
+        // //     match node_mer {
+        // //         KmerTrieNode::Trie(trie) => count += trie.get_sum(),
+        // //         KmerTrieNode::Leaf(leaf) => count += leaf.get_sum(), //leaf.get_sum() calcs -4 to reverse the over counting
+        // //         KmerTrieNode::Empty => continue,
+        // //     };
+        // }
+        // count
+        self.children.values().fold(0, |acc, node| acc + node.get_sum())
+    }
+
+    fn give_first_base_transition(&self) -> [usize; 4] {
+        //count every first base on this branch
+        let mut transition = [1,1,1,1];
+        for (key_mer, node_mer) in self.children.iter() {
+            transition[get0(*key_mer)as usize] += node_mer.get_sum();
+            // match (node_mer) {
+            //     KmerTrieNode::Trie(trie) => {
+            //         transition[get0(*key_mer)as usize] += trie.get_sum();
+            //     },
+            //     KmerTrieNode::Leaf(leaf) => {
+            //         transition[get0(*key_mer)as usize] += leaf.get_sum();
+            //     },
+            // }
+        }
+        transition
+        // self.children
+        //     .iter()
+        //     .fold(
+        //         [1,1,1,1], |acc, (key_mer, node_mer)| acc[] + node.get_sum())
+    }
+
+    // fn get_matches_at_pos(&self, 4kmer: u8, pos: u8) -> (bool , [u8; 4]) {
+    //     //pos means bit poisition, counting from right to left (76543210)
+    //     let a: u8 = 0b0000_0000; // is here for reference, but used as the check
+    //     let c: u8 = !(0b0000_0001 << shift);
+    //     let g: u8 = !(0b0000_0010 << shift);
+    //     let t: u8 = !(0b0000_0011 << shift);
+
+    //     kmer &= t; //this is forcing this part to be A
+    //     //make sure we get 4 disdinct solutions otherwise rust panics or we need to be unsafe
+    //     let potential_matches = self.children.get_disjoint_mut([kmer, kmer | c, kmer | g, kmer | c | g]);
+
+    // }
+
+    fn find_last_matching_pos(&self, kmer: u8) -> u8 {
+        //obviously i din't found the the full match :D 
+        let mask3: u8 = 0b1111_1100; //3base match
+        let mask2: u8 = 0b1111_0000; //2base match
+        let mask1: u8 = 0b1100_0000; //1base match
+        let mut pos2: bool = false;
+        let mut pos1: bool = false;
+        //would be faster with an array, but design choices in the beginning :(
+        // beceause we can search in a trie, there must be something 
+        for key_mer in self.children.keys() {
+            if (key_mer & mask3) == (kmer & mask3) {
+                return 2;
+            }
+            pos2 |= (key_mer & mask2) == (kmer & mask2); //look for pos 3 at the same time
+            pos1 |= (key_mer & mask1) == (kmer & mask1);
+        }
+        if pos2 { return 4; }
+        if pos1 { return 6; }
+        8
+    }
+
+    fn give_last_transitions(&self, kmer: u8) -> [usize; 4] {
+        //I didn't found a leaf so now i gotta find the others that fit
+        let pos = self.find_last_matching_pos(kmer);
+        if pos == 8 { return self.give_first_base_transition(); }
+
+        let mut transitions: [usize; 4] = [1,1,1,1];
+        let mask: u8 = 0b1111_1111 << pos;
+        //here as well, the hashmap doesn't help
+        for (key_mer, node_mer) in self.children.iter() {
+            if (key_mer & mask) == (kmer & mask) {
+                transitions[get3(key_mer >> pos) as usize] += node_mer.get_sum();
+            }
+        }
+        transitions
+    }
+
+    fn give_transitions(&self, kmer: &[u8]) -> [usize; 4] {
+        if kmer.len() == 0 {  return self.give_first_base_transition() }
+        //we assume that the kmer was asked for in the right block size, with trailing zeroes
+        if let Some(node) = self.children.get(&kmer[0]) {
+            if kmer.len() == 1 {
+                return node.give_first_base_transition();
+            } else {
+                return node.give_transitions(&kmer[1..])
+            }
+        } else {
+            return self.give_last_transitions(kmer[0])
+        }
+        //we give 1,1,1,1 back if we can't find anything
+    }
+
+    //only in kmer_counting at the moment
+    // merge actually absorbs
+    fn merge(&mut self, other_trie: &KmerTrie) {
+        if (self.order != other_trie.order) || (self.depth != other_trie.depth) { return; } //needs to be expanded for grammars
+        for (key_mer, node_mer) in other_trie.children.iter() {
+            match node_mer {
+                KmerTrieNode::Trie(trie) => {
+                    if let KmerTrieNode::Trie(my_trie) = self.children.entry(*key_mer).or_insert_with(|| new_leaf()) {
+                        my_trie.merge(trie);
+                    } //I
+                    // self.children
+                    // .entry(*key_mer)
+                    // .and_modify(|node|node.merge(trie))
+                    // .or_insert_with( || new_trie(self.order, self.depth + 4));
+                },
+                    //other trie loses values if i only have a leaf at this node
+                KmerTrieNode::Leaf(leaf) => {
+                    if let KmerTrieNode::Leaf(my_leaf) = self.children.entry(*key_mer).or_insert_with(|| new_leaf()) {
+                        my_leaf.add_leaf(leaf.counts);
+                    } //I have no answer for the situation where I have a branch at this point
+                },
+                KmerTrieNode::Empty => continue,
+                //here we still only work when both tries are completly the same, 
+                //with a grammar, or orther more comples structures, we need to look if we have a node here
             }
         }
     }
 
-    fn get_transitions(&self, kmer: &[u8], counts: &mut [usize], k: u8){
-        if kmer.is_empty() || k == 0 { 
-            let c: usize = 0;
-            self.get_sum(c);
-            for count in counts.iter() {
-                counts += c.strict_div(counts.len())
+    fn collapse(&mut self) {
+        //I collapse every node structure under me, so that my depth becomes full of leafs
+        let extracted_tries: HashMap<u8, [usize; 4]> = self.children.extract_if(|_, n| n.is_trie())
+            .map(|(k, node)| (k, node.give_first_base_transition()))
+            .collect();
+        for (key_mer, transition) in extracted_tries.iter() {
+            if let KmerTrieNode::Leaf(leaf) = self.children.entry(*key_mer).or_insert_with(|| new_leaf()) {
+                leaf.counts = *transition;
             }
         }
+    }
 
-        if kmer.len() == 1 && k < self.sub_k {
-            let (last_kmer, _) = split_at(kmer[0], 8 - k * self.len_b)
-            for (key, node) in self.children.iter() {
-                match node {
-                    kmer_trie_node::Node(trie) => trie.get_sum(count),
-                    kmer_trie_node::Leaf(leaf) => count + leaf.iter().sum(),
+    fn reduce_to_order(&mut self, k: u8) {
+        self.order = self.depth + k;
+        if k <= 5 {
+            self.collapse();
+            if k==5 { return; }
+            self.depth = k-1; //last is always the leaf
+            let mask: u8 = 0b1111_1100 << (8-k*2);
+            let extracted_tries: HashMap<u8, KmerTrieNode> = self.children.extract_if(|k,_| (*k & mask) != *k).collect();
+            for (key_mer, node_mer) in extracted_tries.iter() {
+                if let KmerTrieNode::Leaf(leaf) = self.children.entry(*key_mer & mask).or_insert_with(|| new_leaf()) {
+                    leaf.add_node(node_mer);
                 }
-        }
-            if let Some(node) = self.children.get(kmer[0]) {
-                match node {
-                    kmer_trie_node::Node(trie) => trie.get_sum(count),
-                    kmer_trie_node::Leaf(leaf) => count + leaf.iter().sum(),
-                    _ => return,
+            }
+        } else {
+            for node_mer in self.children.values.mut() {
+                match node_mer {
+                    KmerTrieNode::Trie(trie) => trie.reduce_to_order(k-4),
+                    _ => continue,
                 }
-
-        }
-        if kmer.len() > 1 && k > self.depth + self.sub_k + self.len_b {
-            if !self.children.contains_key(kmer[0]) { return; }
-            if let Some(node) = self.children.get(kmer[0]) {
-            match node {
-                kmer_trie_node::Node(next_tree) => next_tree.get_transitions(kmer[1..], counts),
-                _ => return,
-            }
-        }
-        if kmer.len() == 1 {
-            let rest = self.order - k 
-        }&& k < 8 {
-            let (front, _) = split_at(kmer[1], 8 - k)
-        }
-    }
-
-
-
-    fn get_leafs(&self, kmer: u8, k, counts: &mut [usize]){
-
-    }
-
-    fn get_(&self, kmer: &[u8], k: u8, counts: &mut [usize]) {
-        if kmer.len() == 0 { return self.get_count(); }
-        if kmer.len() == 1 { 
-            return self.get_leafs(kmer[0], k, counts: &mut [usize]); 
-        }
-        if let Some(node) = self.children.get(kmer[0]) {
-            match node {
-                kmer_trie_node::Node(next_tree) => next_tree.get_counts(kmer[1..], counts),
-                kmer_trie_node::Leaf(leaf) => 
-            }
-        }
-        if kmer.len() == 1 { 
-
-        }
-        if let Some(node) = self.children.get(&target_kmer) {
-            match node {
-                kmer_trie_node::Node(next_tree) => next_tree.extract_path(target_kmer, path),
-                kmer_trie_node::Leaf(_) => return, // Found the end
             }
         }
     }
-
-
 }
 
 
- // //need to specify the length of of the kmer asked for
-    // fn get_count(&self, kmer&[u8], k: u8, count: &usize) {
-    //     if kmer.is_empty() ||
-    //     if k < self.depth + self.sub_k && !kmer.is_empty() { 
+//// TESTING FUNCTION FOR CORRECTNESS
 
-    //     }
-    //     if k > self.depth ||  { return self.get_sum(count); }
-    //     if kmer.len() == 0 { return self.get_sum(count); }
-    //     if kmer.len() == 1 {
-    //         let 
-    //         if k == self.order {
-    //             let first, last = split_at(kmer[0], );
-    //             if !self.children.contains_key(first) { return; }
-    //             let Some(leaf) = self.children.get(first);
-    //             if !leaf.is_leaf { return; }
-    //             count + *leaf[last as usize];
-    //         } else {
-    //             let pos = k - self.depth;
-    //             let first, last = split_at(kmer[0], pos);
-    //             let Some(node) = self.children.get(first);
-    //                 match node {
-    //                     kmer_trie_node::Leaf(leaf) => count + *leaf[last as usize],
-    //                     _ => return,
-    //                 }
-    //         }
-    //         let pos = k - self.depth;
-    //         for (key, node) in self.children.iter() {
-    //             let pos = k-self.depth;
-    //             if 
-    //             match node {
-    //                 kmer_trie_node::Node(trie) => trie.get_sum(count),
-    //                 kmer_trie_node::Leaf(leaf) => count + leaf.iter().sum(),
-    //             }
-    //     }
-    //     if k > self.order { return; }
-    // 
-    //     }
-    //     if let Some(node) = self.children.get(kmer[0]) {
-    //         match node {
-    //             kmer_trie_node::Node(next_tree) => next_tree.get_counts(kmer[1..], counts),
-    //             kmer_trie_node::Leaf(leaf) => 
-    //         }
-    //     }
-    //     for (_, node) in self.children.iter() {
-    //         match node {
-    //             kmer_trie_node::Node(trie) => count + trie.get_sum(),
-    //             kmer_trie_node::Leaf(leaf) => count + leaf.iter().sum(),
-    //         }
-    //     }
-    // }
-fn main() {
-    // Collect command-line arguments into a vector of strings
-    let args: Vec<String> = args().collect();
+// fn main() {
+    
+//     let mut letters = HashMap::new();
+    
+//     for ch in "a short treatise on fungi".chars() {
+//         letters.entry(ch).and_modify(|counter| *counter += 1).or_insert(1);
+//     }
+//     let mut vec: Vec<u8> = vec![
+//         b'A', b'A', b'A', b'A', b'A', b'A', b'A', 
+//         b'3', b'B', b'c', b'A', b'O', b'A', b'i', 
+//         b'G', b'C', b't', b'A', b'A', b'A', b'A', 
+//         b'3', b'B', b'c', b'A', b'O', b'A', b'i', 
+//         b'A', b'A', b'A', b't', b'A', b'c', b'C', 
+//         b'3', b'B', b'c', b'T', b'O', b'A', b'i', 
+//         b'A', b'A', b'A', b'A', b'A', b'g', b'A', 
+//         b'3', b'B', b'c', b'A', b'O', b'g', b'i'
+//     ];
+//     let mut seed:u64 = 100;
+    
+//     let trie = rolling_kmer_end_hash(&mut vec[..], &mut seed, 5);
 
-    // Ensure the path to the file is provided as the second argument
-    // Extracts a reference to the path string.
-    let path: &String = &args.get(1).expect("File path not specified.");
-
-    // Retrieve the metadata for the open file to get the length in `usize` bytes
-    // If the metadata retrieval fails, program will panic
-    let file_length: usize = metadata(&path)
-        .expect("Unable to query file details")
-        .len()
-        .try_into()
-        .expect("Cannot convert file length");
-
-    // Size of each block to be read from the file (16MB)
-    const BLOCK_SIZE: usize = 16_777_216;
-
-    // Number of threads to be used for reading the file
-    const THREADS: usize = 4;
-
-    // Determine the portion of the file each thread will handle
-    let division: usize = (file_length + THREADS - 1) / THREADS;
-
-    // Use scoped threads to ensure all threads are joined before the main thread exits
-    thread::scope(|scope: &thread::Scope| {
-        // Create `THREADS` number of threads
-        for i in 0..THREADS {
-            scope.spawn(move || {
-                // Open a file handle per thread
-                // Ensuring each thread works on its own file descriptor
-                let mut thread_file: File = File::open(&path).expect("Unable to open file");
-
-                // Initialize a 16MB buffer to hold data read by this thread
-                let mut contents: Vec<u8> = vec![0_u8; BLOCK_SIZE];
-
-                // Counter for the number of bytes read in each operation
-                // Init'd as 1, as zero would indicate an EOF
-                let mut read_length: usize = 1;
-
-                // Counter to keep track of the total nuber of bytes read by this thread
-                let mut read_total: usize = 0;
-
-                // Determing the offset in the file where this thread should start reading.
-                // Each thred reads a different portion of the file
-                let offset: u64 = (i * division) as u64;
-
-                // Seek to the starting position in the file for this thread
-                // If it couldn't start from there, the program panics
-                thread_file
-                    .seek(SeekFrom::Start(offset))
-                    .expect("Couldn't seek to position in file");
-
-                // Read data in iterations until the thread's portion is read or EOF is reached
-                // i.e there is no more bytes to be read from the file
-                while (read_total < division) && (read_length != 0) {
-                    // Adjust the contents buffer size if the remaining bytes to be read are less than the block size
-                    if read_total + BLOCK_SIZE > division {
-                        // Reduce the vector to ensure we don't read beyond the division
-                        // If this doesn't happen, data for the next thread will be read causing offset seek errors
-                        contents.truncate(division - read_total);
-                    }
-
-                    // Read data into the contents buffer
-                    // `read_length` is updated with the number of bytes read
-                    read_length = thread_file.read(&mut contents).expect("Couldn't read file");
-                    read_total += read_length;
-                }
-
-                // Verify the entire file was read correctly by visualizing total number of bytes read from the file
-                // by each thread and the original file length
-                println!("Thread {i}: Total bytes read: {read_total} bytes || Expected: {division} bytes");
-            });
-        }
-    });
+//     fn p1 (a: Vec<u8>) {
+//         if let Ok(s) =  String::from_utf8(a.iter().map(|x| TO_CHAR[*x as usize]).collect()) {
+//             print!("{}", s);
+//         }
+//     }
+//     //println!("{}", trie.get_sum());
+//     //println!("{}", trie.give_last_transitions(1u8)[0]);
+//     print!("\n");
+//     fn p(trie: &KmerTrie) {
+//         for (key, node_mer) in trie.children.iter() {
+//             println!("depth: {} kmer starts with",trie.depth);
+//             p1(decompress_to_dna4(&[*key], 4));
+//             match node_mer {
+//                 KmerTrieNode::Trie(trie) => p(trie),
+//                 KmerTrieNode::Leaf(leaf) => print!("leaf is here with a,c,g,t: {},{},{},{}", leaf.counts[0],leaf.counts[1],leaf.counts[2],leaf.counts[3]), //otherwise I over calculate every instance of leaf
+//                 KmerTrieNode::Empty => continue,
+//             }
+//         }
+//     }
+// }

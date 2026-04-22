@@ -9,7 +9,10 @@ use bio::io::fasta::{Writer, Record};
 use std::io::BufWriter;
 use std::io::Write;
 
-
+use crate::args::SimulateArgs;
+use crate::io::{get_records, print_record, char_to_int, int_to_char};
+use crate::hashing::{CHUNK_SIZE, TO_DNA4, TO_CHAR, rolling_kmer_end_hash, kmer_count};
+use crate::kmer_count::{KmerTrie}
 use crate::io::{get_records, print_record, char_to_int, int_to_char, is_valid_path};
 use crate::args::RandomArgs;
 
@@ -89,13 +92,13 @@ pub fn generate_sequence(
 } // end pub fn generate_sequence
 
 
-pub fn create_random_fasta(args : &RandomArgs) {
+pub fn create_random_fasta(args : &SimulateArgs) {
     let file = File::create(&args.output).expect("Couldn't create file");
     let mut bufwriter = BufWriter::new(file);
     let mut fasta_writer = Writer::from_bufwriter(bufwriter);
     //fasta_writer.set_linewrap(Some(80));
 
-    let (alphabet, dist) = get_alphabet_and_distribution(&args.input, &args.alphabet, &args.distribution);
+    //let (alphabet, dist) = get_alphabet_and_distribution(&args.input, &args.alphabet, &args.distribution);
     let seed = args.seed;
 
     for (nr, len) in args.lens.iter().enumerate() {
@@ -105,40 +108,51 @@ pub fn create_random_fasta(args : &RandomArgs) {
         let record = Record::with_attrs(&header, Some(&desc), &[]);
         fasta_writer.write_record(&record).expect("Header write failed");
 
-
         let (tx, rx) = mpsc::channel();
         let length = *len as u64;
         let chunk_size = length / args.threads;
 
+
+        kmer_trie = rolling_kmer_end_hash(record[0..record.seq().len()-1], seed, arg.order);
+
         for i in 0..args.threads {
             let thread_tx = tx.clone();
-            let alphabet_clone = alphabet.clone();
-            let distribution_clone = dist.clone();
+            //let alphabet_clone = alphabet.clone();
+            //let distribution_clone = dist.clone();
             let thread_seed = seed.wrapping_add(i as u64).wrapping_add(nr as u64);
 
             let start = i * chunk_size;
-            let end = std::cmp::min(start + chunk_size, length);
-            let chunk_length = end - start;
+            let end = std::cmp::min(start + chunk_size + arg.order - 1, length);
+            //let chunk_length = end - start;
 
             thread::spawn(move || {
-                let sequence = generate_sequence(chunk_length as usize, alphabet_clone, distribution_clone, thread_seed);
+                let sequence = rolling_kmer_end_hash(record[start..end], thread_seed, arg.order);
                 thread_tx.send((i, sequence)).expect("Failed to send chunk");
             });
         }
 
         drop(tx);
 
-        let mut received = std::collections::BTreeMap::new();
+       // let mut received = std::collections::BTreeMap::new();
 //        let inner_writer = writer.get_ref_mut();
 
         let mut next_to_write = 0;
        // let mut column_count = 0;
 
         while next_to_write < args.threads {
-
+            let kmer_count = KmerTrie(arg.order);
             if let Ok((i, sequence)) = rx.recv() {
-                received.insert(i, sequence);
+                //received.insert(i, sequence);
+                kmer_count.merge(sequence);
             }
+            next_to_write +=1;
+
+
+        let start = Vec::extend_from_slice(&seed.to_be_bytes()[..]);
+
+
+
+        
             // write them in order, so the kmer stays the same
             while let Some(sequence) = received.remove(&next_to_write) {
                 let _ = fasta_writer.write(&next_to_write.to_string(), None, &sequence);
